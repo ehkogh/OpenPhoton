@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="OpenPhoton">
+  <title>OpenPhoton</title>
+
+  <style>
+    /* Referenced through &lt;img&gt; the SVG is its own document, so it cannot inherit a
+       page colour. It answers prefers-color-scheme itself instead, which keeps one file
+       legible on both a light and a dark README. */
+    :root { --mark: #14181D; }
+    @media (prefers-color-scheme: dark) { :root { --mark: #F2F5F8; } }
+
+    .line { fill: none; stroke: var(--mark); stroke-linecap: round; stroke-linejoin: round; }
+    .node { fill: var(--mark); }
+  </style>
+
+  <path class="line" d="M12 41 A 20 20 0 0 1 52 41" stroke-width="2.5"/>
+  <path class="line" d="M12 41 Q 22 30 32 41 T 52 41" stroke-width="4"/>
+
+  <circle class="node" cx="12" cy="41" r="4.5"/>
+  <circle class="node" cx="52" cy="41" r="4.5"/>
+  <circle class="node" cx="32" cy="21" r="4.5"/>
+</svg>

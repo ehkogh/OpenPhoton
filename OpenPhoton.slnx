@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OpenPhoton.HivePlugin/OpenPhoton.HivePlugin.csproj" />
+    <Project Path="src/OpenPhoton.Realtime/OpenPhoton.Realtime.csproj" />
+    <Project Path="src/OpenPhoton.Server/OpenPhoton.Server.csproj" />
+    <Project Path="src/OpenPhoton.SocketServer/OpenPhoton.SocketServer.csproj" />
+    <Project Path="src/OpenPhoton.Transport/OpenPhoton.Transport.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      netstandard2.0 so that plugins built for .NET Framework 4.7.2 can bind
+      against this while the host itself runs on modern .NET.
+    -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+
+    <!--
+      Assembly identity must be PhotonHivePlugin, NOT Photon.Hive.Plugin. The namespace is
+      Photon.Hive.Plugin but .NET binds on the assembly name, and a compiled plugin's reference reads
+      "PhotonHivePlugin, Version=1.1.0.24499". Emitting the namespace as the file name is the
+      obvious mistake and produces an assembly nothing can load.
+    -->
+    <AssemblyName>PhotonHivePlugin</AssemblyName>
+    <RootNamespace>Photon.Hive.Plugin</RootNamespace>
+    <AssemblyVersion>1.1.0.24499</AssemblyVersion>
+    <FileVersion>1.1.0.24499</FileVersion>
+  </PropertyGroup>
+
+</Project>

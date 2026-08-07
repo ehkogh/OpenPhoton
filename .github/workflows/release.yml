@@ -1,0 +1,121 @@
+name: release
+
+# Tagging v1.2.3 publishes v1.2.3. The tag is the only place the release version is
+# written; the number baked into the binaries is taken from it, so a build can never
+# report a version different from the one it shipped under.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (no leading v). Produces artifacts but no release."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            archive: zip
+          - rid: linux-x64
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=openphoton-$version-${{ matrix.rid }}" >> "$GITHUB_OUTPUT"
+
+      # Self-contained: the point of a release build is that it runs on a machine with
+      # nothing installed. Trimming stays off — plugins are resolved by reflection from
+      # assemblies the trimmer never sees, so it would strip the types plugins need.
+      - name: Publish
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          dotnet publish src/OpenPhoton.Server \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:Version=${{ steps.version.outputs.version }} \
+            -p:DebugType=none \
+            -o "dist/$NAME" \
+            --nologo
+
+      # The two assemblies a plugin compiles against, so a plugin author does not need the
+      # Exit Games SDK to build against this server.
+      - name: Stage plugin author references
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          mkdir -p "dist/$NAME/lib"
+          cp "dist/$NAME/PhotonHivePlugin.dll"   "dist/$NAME/lib/"
+          cp "dist/$NAME/Photon.SocketServer.dll" "dist/$NAME/lib/"
+          cp README.md LICENSE "dist/$NAME/"
+
+      - name: Package
+        id: package
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -qr "$NAME.zip" "$NAME"
+            echo "file=dist/$NAME.zip" >> "$GITHUB_OUTPUT"
+          else
+            # The publish output's exec bit is what makes the tarball runnable on unpack.
+            chmod +x "$NAME/openphoton"
+            tar -czf "$NAME.tar.gz" "$NAME"
+            echo "file=dist/$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.name }}
+          path: ${{ steps.package.outputs.file }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a tag push publishes. A manual run builds and uploads artifacts so a release
+    # can be rehearsed without creating one.
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # gh ships on the runner, so this avoids depending on a third-party release action.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "OpenPhoton ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            artifacts/*

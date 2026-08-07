@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      Assembly identity must match Photon's so that third-party code compiled against
+      the real SDK resolves to this implementation instead. The project directory is
+      named OpenPhoton.* to keep our source tree distinct from the identity it emits.
+    -->
+    <AssemblyName>Photon.SocketServer</AssemblyName>
+    <RootNamespace>Photon.SocketServer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenPhoton.SocketServer.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>openphoton</AssemblyName>
+    <RootNamespace>OpenPhoton.Server</RootNamespace>
+
+    <Version>0.1.0</Version>
+    <Product>OpenPhoton</Product>
+    <Description>An open-source Photon Server 5 compatible realtime server.</Description>
+
+    <!--
+      Trimming is off deliberately. Plugins are loaded by reflection from assemblies the
+      trimmer never sees, so it would strip exactly the types a plugin needs and the failure
+      would land at a plugin author's feet rather than here.
+    -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenPhoton.Transport\OpenPhoton.Transport.csproj" />
+    <ProjectReference Include="..\OpenPhoton.Realtime\OpenPhoton.Realtime.csproj" />
+    <ProjectReference Include="..\OpenPhoton.HivePlugin\OpenPhoton.HivePlugin.csproj" />
+  </ItemGroup>
+
+</Project>
