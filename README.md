@@ -9,7 +9,7 @@ A self-hostable realtime server implementing the Photon Server 5 protocol.
 Requires .NET 8 SDK or newer.
 
 ```sh
-dotnet build OpenPhoton.slnx
+dotnet build src/OpenPhoton.Server
 ```
 
 ## Run
