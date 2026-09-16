@@ -183,6 +183,10 @@ public sealed class PluginLoader(Action<string> log)
 
         protected override Assembly Load(AssemblyName assemblyName)
         {
+            var contractAssembly = typeof(IPluginFactory).Assembly;
+            if (string.Equals(assemblyName.Name, contractAssembly.GetName().Name, StringComparison.OrdinalIgnoreCase))
+                return contractAssembly;
+
             var path = _resolver.ResolveAssemblyToPath(assemblyName);
             return path is null ? null : LoadFromAssemblyPath(path);
         }
