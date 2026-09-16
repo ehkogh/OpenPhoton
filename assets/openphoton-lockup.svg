@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 322 72" width="322" height="72" role="img" aria-label="OpenPhoton">
+  <title>OpenPhoton</title>
+
+  <style>
+    /* Referenced through &lt;img&gt; the SVG is its own document and cannot inherit a page
+       colour, so it answers prefers-color-scheme itself. One file, legible on both themes. */
+    :root { --mark: #14181D; }
+    @media (prefers-color-scheme: dark) { :root { --mark: #F2F5F8; } }
+
+    .line { fill: none; stroke: var(--mark); stroke-linecap: round; stroke-linejoin: round; }
+    .node { fill: var(--mark); }
+
+    .word {
+      fill: var(--mark);
+      font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system,
+                   "Helvetica Neue", Arial, sans-serif;
+      font-size: 42px;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+  </style>
+
+  <g transform="translate(-7.75,-6.25) scale(1.3)">
+    <path class="line" d="M12 41 A 20 20 0 0 1 52 41" stroke-width="2.5"/>
+    <path class="line" d="M12 41 Q 22 30 32 41 T 52 41" stroke-width="4"/>
+    <circle class="node" cx="12" cy="41" r="4.5"/>
+    <circle class="node" cx="52" cy="41" r="4.5"/>
+    <circle class="node" cx="32" cy="21" r="4.5"/>
+  </g>
+
+  <text class="word" x="86" y="50">OpenPhoton</text>
+</svg>
