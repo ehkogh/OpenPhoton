@@ -29,4 +29,15 @@
     <ProjectReference Include="..\OpenPhoton.HivePlugin\OpenPhoton.HivePlugin.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Photon plugins are commonly .NET Framework assemblies. Framework-targeted
+      dependencies such as Newtonsoft.Json's net45 build still bind to the old
+      Code Access Security facade when hosted on modern .NET. Keep the compatibility
+      assembly in the default load context so isolated plugin contexts can fall back
+      to it without every legacy plugin having to carry its own framework shim.
+    -->
+    <PackageReference Include="System.Security.Permissions" Version="8.0.0" />
+  </ItemGroup>
+
 </Project>
