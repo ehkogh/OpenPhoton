@@ -16,6 +16,13 @@ public sealed class UnknownCustomType(byte typeCode, byte[] data)
     public byte[] Data { get; } = data;
 }
 
+public sealed class CustomTypeArray(byte typeCode, object?[] elements)
+{
+    public byte TypeCode { get; } = typeCode;
+
+    public object?[] Elements { get; } = elements;
+}
+
 /// <summary>
 /// Maps custom type codes to CLR types and their byte-array encodings.
 /// </summary>

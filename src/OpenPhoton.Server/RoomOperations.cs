@@ -69,7 +69,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
         }
 
         _log($"    {actor} listens to {actor.InterestGroups.Count} group(s)");
-        return ValueTask.FromResult<OperationResponse?>(new OperationResponse(request.OperationCode));
+        return ValueTask.FromResult<OperationResponse?>(OperationDispatcher.NoResponse);
     }
 
     /// <summary>
@@ -87,7 +87,6 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
         var name = GetString(request, ParameterCode.RoomName) ?? Guid.NewGuid().ToString("N");
 
         var room = _rooms.GetOrCreate(name, out var created);
-        ApplyRoomOptions(room, request);
         return await EnterAsync(peer, request, room, created);
     }
 
@@ -104,7 +103,6 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
             return Fail(request, ErrorCode.GameDoesNotExist, $"Room '{name}' does not exist.");
 
         var room = _rooms.GetOrCreate(name, out var created);
-        ApplyRoomOptions(room, request);
         return await EnterAsync(peer, request, room, created);
     }
 
@@ -182,6 +180,21 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
             isCreator = !room.HasBeenEntered;
             room.ReleaseExpiredSlots();
 
+            if (isCreator && joinMode != JoinMode.RejoinOnly)
+            {
+                var admitted = room.TryJoin(userId, peer.Channel, properties, out var creatorWhy);
+                decision = creatorWhy;
+
+                if (admitted is not null
+                    && (joinMode == JoinMode.CreateIfNotExists
+                        || request.OperationCode == OperationCode.CreateGame))
+                {
+                    ApplyRoomOptions(room, request);
+                }
+
+                return admitted;
+            }
+
             if (joinMode is JoinMode.JoinOrRejoin or JoinMode.RejoinOnly
                 && room.FindReclaimable(userId) is { } slot)
             {
@@ -196,9 +209,9 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
                 return null;
             }
 
-            var admitted = room.TryJoin(userId, peer.Channel, properties, out var why);
+            var joined = room.TryJoin(userId, peer.Channel, properties, out var why);
             decision = why;
-            return admitted;
+            return joined;
         });
 
         _rooms.WithLock<object?>(() => { SyncMasterClient(room); return null; });
@@ -434,6 +447,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
                     {
                         [GamePropertyKey.MasterClientId] = room.MasterClientId,
                     },
+                    [ParameterCode.TargetActorNr] = 0,
                 }));
         }
 
@@ -528,13 +542,35 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
 
         var group = (ReceiverGroup)(GetByte(request, ParameterCode.ReceiverGroup) ?? (byte)ReceiverGroup.Others);
         var interestGroup = GetByte(request, ParameterCode.Group) ?? 0;
-        var targets = Get(request, ParameterCode.TargetActorNr);
+
+        var targets = Get(request, ParameterCode.ActorList);
 
         if (targets is int[] explicitTargets)
         {
+            var sent = new List<int>();
+
             foreach (var number in explicitTargets)
-                if (room.Find(number) is { } target)
+            {
+                if (room.Find(number) is not { } target) continue;
+
+                if (target.IsInactive)
+                {
+                    _log($"    [ev {eventCode}] to actor {number} skipped: slot is inactive");
+                    continue;
+                }
+
+                try
+                {
                     await target.Channel.SendEventAsync(payload, CancellationToken.None);
+                    sent.Add(number);
+                }
+                catch (Exception ex)
+                {
+                    _log($"    send to {target} failed: {ex.GetType().Name}");
+                }
+            }
+
+            if (sent.Count > 0) _log($"    [ev {eventCode}] -> actor {string.Join(", ", sent)}");
         }
         else
         {
@@ -610,8 +646,8 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
             {
                 [ParameterCode.Properties] = update,
                 [ParameterCode.ActorNr] = actor.ActorNumber,
+                [ParameterCode.TargetActorNr] = targetActor is > 0 ? targetActor.Value : 0,
             };
-            if (targetActor is > 0) changed[ParameterCode.TargetActorNr] = targetActor.Value;
 
             await BroadcastAsync(room, except: actor, new EventData(EventCode.PropertiesChanged, changed));
         }

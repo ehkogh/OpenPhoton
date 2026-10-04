@@ -81,6 +81,11 @@ public static class Protocol16
                 WriteObjectArray(s, (object?[])value!, ct);
                 break;
             case GpType.Array:
+                if (value is CustomTypeArray customArray)
+                {
+                    WriteCustomArray(s, customArray, ct);
+                    break;
+                }
                 WriteTypedArray(s, (Array)value!, ct);
                 break;
             case GpType.Hashtable:
@@ -183,7 +188,48 @@ public static class Protocol16
         var elementType = GetElementTypeCode(v.GetType().GetElementType()!, ct);
         WriteInt16(s, checked((short)v.Length));
         s.WriteByte((byte)elementType);
+
+        if (elementType == GpType.Custom)
+        {
+            if (!ct.TryGetByType(v.GetType().GetElementType()!, out var entry) || entry is null)
+                throw new NotSupportedException($"No custom type registered for {v.GetType().GetElementType()}.");
+
+            s.WriteByte(entry.Code);
+            WriteCustomElements(s, entry.Code, v.Cast<object?>(), ct);
+            return;
+        }
+
         foreach (var item in v) WritePayload(s, item, elementType, ct);
+    }
+
+    static void WriteCustomArray(Stream s, CustomTypeArray v, CustomTypeRegistry ct)
+    {
+        WriteInt16(s, checked((short)v.Elements.Length));
+        s.WriteByte((byte)GpType.Custom);
+        s.WriteByte(v.TypeCode);
+        WriteCustomElements(s, v.TypeCode, v.Elements, ct);
+    }
+
+    static void WriteCustomElements(Stream s, byte code, IEnumerable<object?> elements, CustomTypeRegistry ct)
+    {
+        ct.TryGetByCode(code, out var entry);
+
+        foreach (var item in elements)
+        {
+            if (item is UnknownCustomType raw)
+            {
+                WriteInt16(s, checked((short)raw.Data.Length));
+                s.Write(raw.Data, 0, raw.Data.Length);
+                continue;
+            }
+
+            if (item is null || entry is null)
+                throw new NotSupportedException($"Cannot serialise element of custom array type {code}.");
+
+            var data = entry.Serialize(item);
+            WriteInt16(s, checked((short)data.Length));
+            s.Write(data, 0, data.Length);
+        }
     }
 
     static void WriteHashtable(Stream s, IDictionary v, CustomTypeRegistry ct)
@@ -421,10 +467,19 @@ public static class Protocol16
         return arr;
     }
 
-    static Array ReadTypedArray(Stream s, CustomTypeRegistry ct)
+    static object ReadTypedArray(Stream s, CustomTypeRegistry ct)
     {
         var len = CheckLength(ReadInt16(s), "array");
         var elementType = (GpType)ReadByteChecked(s);
+
+        if (elementType == GpType.Custom)
+        {
+            var code = ReadByteChecked(s);
+            var elements = new object?[len];
+            for (var i = 0; i < len; i++) elements[i] = ReadCustomBody(s, code, ct);
+            return new CustomTypeArray(code, elements);
+        }
+
         var clrType = GetClrType(elementType, ct);
 
         var arr = Array.CreateInstance(clrType, len);
@@ -504,9 +559,10 @@ public static class Protocol16
         };
     }
 
-    static object ReadCustom(Stream s, CustomTypeRegistry ct)
+    static object ReadCustom(Stream s, CustomTypeRegistry ct) => ReadCustomBody(s, ReadByteChecked(s), ct);
+
+    static object ReadCustomBody(Stream s, byte code, CustomTypeRegistry ct)
     {
-        var code = ReadByteChecked(s);
         var len = CheckLength(ReadInt16(s), "custom type");
         var data = new byte[len];
         s.ReadExactly(data);
@@ -531,6 +587,7 @@ public static class Protocol16
         int[] => GpType.IntegerArray,
         string[] => GpType.StringArray,
         object[] => GpType.ObjectArray,
+        CustomTypeArray => GpType.Array,
         Hashtable => GpType.Hashtable,
         EventData => GpType.EventData,
         OperationRequest => GpType.OperationRequest,

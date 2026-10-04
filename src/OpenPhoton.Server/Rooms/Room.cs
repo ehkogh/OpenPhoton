@@ -122,6 +122,7 @@ public abstract class RoomHooks
 public sealed class Room(string name, RoomHooks? hooks = null)
 {
     readonly List<Actor> _actors = [];
+    readonly object _gate = new();
     readonly RoomHooks _hooks = hooks ?? NullHooks.Instance;
 
     int _nextActorNumber = 1;
@@ -141,10 +142,16 @@ public sealed class Room(string name, RoomHooks? hooks = null)
     public Hashtable Properties { get; } = [];
 
     /// <summary>Everyone in the room, including slots held for absent players.</summary>
-    public IReadOnlyList<Actor> Actors => _actors;
+    public IReadOnlyList<Actor> Actors
+    {
+        get { lock (_gate) return [.. _actors]; }
+    }
 
     /// <summary>Only actors currently connected. Events go to these.</summary>
-    public IEnumerable<Actor> ActiveActors => _actors.Where(a => !a.IsInactive);
+    public IEnumerable<Actor> ActiveActors
+    {
+        get { lock (_gate) return _actors.Where(a => !a.IsInactive).ToArray(); }
+    }
 
     /// <summary>
     /// True when nobody is connected. Held slots do not count.
@@ -154,17 +161,28 @@ public sealed class Room(string name, RoomHooks? hooks = null)
     /// but its held slots still need to survive long enough to be reclaimed — that tension
     /// is what <see cref="EmptyRoomTtl"/> resolves.
     /// </remarks>
-    public bool IsEmpty => !_actors.Any(a => !a.IsInactive);
+    public bool IsEmpty
+    {
+        get { lock (_gate) return !_actors.Any(a => !a.IsInactive); }
+    }
 
-    public bool HasReclaimableSlots => _actors.Any(a => a.IsInactive && !a.ReclaimWindowExpired);
+    public bool HasReclaimableSlots
+    {
+        get { lock (_gate) return _actors.Any(a => a.IsInactive && !a.ReclaimWindowExpired); }
+    }
 
     /// <summary>Lowest connected actor number. Photon promotes the next lowest when one leaves.</summary>
     public int MasterClientId
     {
         get
         {
-            var active = ActiveActors.ToList();
-            return active.Count == 0 ? 0 : active.Min(a => a.ActorNumber);
+            lock (_gate)
+            {
+                var lowest = int.MaxValue;
+                foreach (var a in _actors)
+                    if (!a.IsInactive && a.ActorNumber < lowest) lowest = a.ActorNumber;
+                return lowest == int.MaxValue ? 0 : lowest;
+            }
         }
     }
 
@@ -219,62 +237,82 @@ public sealed class Room(string name, RoomHooks? hooks = null)
     public bool IsVisible { get; set; } = true;
 
     /// <summary>True when a random-match search should consider this room.</summary>
-    public bool IsJoinable => IsOpen && (MaxPlayers == 0 || _actors.Count < MaxPlayers);
+    public bool IsJoinable
+    {
+        get { lock (_gate) return IsOpen && (MaxPlayers == 0 || _actors.Count < MaxPlayers); }
+    }
 
     /// <summary>True when the room should be advertised to lobby clients.</summary>
     public bool IsListable => IsVisible && !IsEmpty;
 
-    public Actor? Find(int actorNumber) => _actors.FirstOrDefault(a => a.ActorNumber == actorNumber);
+    public Actor? Find(int actorNumber)
+    {
+        lock (_gate) return _actors.FirstOrDefault(a => a.ActorNumber == actorNumber);
+    }
 
-    public Actor? FindByChannel(long channelId) => _actors.FirstOrDefault(a => a.Channel.Id == channelId);
+    public Actor? FindByChannel(long channelId)
+    {
+        lock (_gate) return _actors.FirstOrDefault(a => a.Channel.Id == channelId);
+    }
 
     /// <summary>Actor numbers reported to clients, held slots included so returning players keep their place.</summary>
-    public int[] ActorNumbers => [.. _actors.Select(a => a.ActorNumber)];
+    public int[] ActorNumbers
+    {
+        get { lock (_gate) return [.. _actors.Select(a => a.ActorNumber)]; }
+    }
 
     /// <summary>Validates a join, then admits the actor. Returns null when the decision denies it.</summary>
     public Actor? TryJoin(string userId, IPeerChannel channel, Hashtable? properties, out Decision decision)
     {
-        if (!IsOpen)
+        lock (_gate)
         {
-            decision = Decision.Deny(Realtime.Protocol.ErrorCode.GameClosed, $"Room '{Name}' is closed.");
-            return null;
+            if (!IsOpen)
+            {
+                decision = Decision.Deny(Realtime.Protocol.ErrorCode.GameClosed, $"Room '{Name}' is closed.");
+                return null;
+            }
+
+            if (MaxPlayers > 0 && _actors.Count >= MaxPlayers)
+            {
+                decision = Decision.Deny(Realtime.Protocol.ErrorCode.GameFull, $"Room '{Name}' is full.");
+                return null;
+            }
+
+            decision = _hooks.BeforeJoin(this, userId);
+            if (!decision.Allowed) return null;
+
+            ClearReservation();
+
+            var actor = new Actor(_nextActorNumber++, userId, channel);
+            if (properties is not null)
+                foreach (DictionaryEntry entry in properties)
+                    actor.Properties[entry.Key] = entry.Value;
+
+            _actors.Add(actor);
+            HasBeenEntered = true;
+            _hooks.OnJoin(this, actor);
+
+            decision = Decision.Allow;
+            return actor;
         }
-
-        if (MaxPlayers > 0 && _actors.Count >= MaxPlayers)
-        {
-            decision = Decision.Deny(Realtime.Protocol.ErrorCode.GameFull, $"Room '{Name}' is full.");
-            return null;
-        }
-
-        decision = _hooks.BeforeJoin(this, userId);
-        if (!decision.Allowed) return null;
-
-        ClearReservation();
-
-        var actor = new Actor(_nextActorNumber++, userId, channel);
-        if (properties is not null)
-            foreach (DictionaryEntry entry in properties)
-                actor.Properties[entry.Key] = entry.Value;
-
-        _actors.Add(actor);
-        HasBeenEntered = true;
-        _hooks.OnJoin(this, actor);
-
-        decision = Decision.Allow;
-        return actor;
     }
 
     /// <summary>Finds a held slot this user may reclaim.</summary>
-    public Actor? FindReclaimable(string userId) =>
-        _actors.FirstOrDefault(a => a.IsInactive && !a.ReclaimWindowExpired && a.UserId == userId);
+    public Actor? FindReclaimable(string userId)
+    {
+        lock (_gate) return _actors.FirstOrDefault(a => a.IsInactive && !a.ReclaimWindowExpired && a.UserId == userId);
+    }
 
     /// <summary>Returns a player to their existing slot, keeping their actor number and properties.</summary>
     public Actor Reclaim(Actor slot, IPeerChannel channel)
     {
-        slot.Reactivate(channel);
-        EmptySince = null;
-        _hooks.OnJoin(this, slot);
-        return slot;
+        lock (_gate)
+        {
+            slot.Reactivate(channel);
+            EmptySince = null;
+            _hooks.OnJoin(this, slot);
+            return slot;
+        }
     }
 
     /// <summary>
@@ -286,37 +324,49 @@ public sealed class Room(string name, RoomHooks? hooks = null)
     /// </param>
     public void Leave(Actor actor, bool becomeInactive = false)
     {
-        if (!_actors.Contains(actor)) return;
-
-        if (becomeInactive && PlayerTtl > TimeSpan.Zero)
+        lock (_gate)
         {
-            actor.Deactivate(PlayerTtl);
-        }
-        else
-        {
-            _actors.Remove(actor);
-        }
+            if (!_actors.Contains(actor)) return;
 
-        _hooks.OnLeave(this, actor);
+            if (becomeInactive && PlayerTtl > TimeSpan.Zero)
+            {
+                actor.Deactivate(PlayerTtl);
+            }
+            else
+            {
+                _actors.Remove(actor);
+            }
 
-        if (IsEmpty)
-        {
-            EmptySince = DateTime.UtcNow;
-            if (!HasReclaimableSlots) _hooks.OnClose(this);
+            _hooks.OnLeave(this, actor);
+
+            if (IsEmpty)
+            {
+                EmptySince = DateTime.UtcNow;
+                if (!HasReclaimableSlots) _hooks.OnClose(this);
+            }
         }
     }
 
     /// <summary>Drops held slots whose reclaim window has passed. Returns those released.</summary>
     public IReadOnlyList<Actor> ReleaseExpiredSlots()
     {
-        var expired = _actors.Where(a => a.ReclaimWindowExpired).ToList();
-        foreach (var actor in expired) _actors.Remove(actor);
-        return expired;
+        lock (_gate)
+        {
+            var expired = _actors.Where(a => a.ReclaimWindowExpired).ToList();
+            foreach (var actor in expired) _actors.Remove(actor);
+            return expired;
+        }
     }
 
     /// <summary>True when the room has been empty longer than it is allowed to linger.</summary>
-    public bool HasOutlivedItsGracePeriod =>
-        IsEmpty && !HasReclaimableSlots && EmptySince is { } since && DateTime.UtcNow - since > EmptyRoomTtl;
+    public bool HasOutlivedItsGracePeriod
+    {
+        get
+        {
+            lock (_gate)
+                return IsEmpty && !HasReclaimableSlots && EmptySince is { } since && DateTime.UtcNow - since > EmptyRoomTtl;
+        }
+    }
 
     public Decision CheckRaiseEvent(Actor sender, byte eventCode, object? data) =>
         _hooks.BeforeRaiseEvent(this, sender, eventCode, data);
@@ -332,21 +382,33 @@ public sealed class Room(string name, RoomHooks? hooks = null)
     /// a spawn after the move that followed it leaves that client disagreeing with everyone
     /// else about where things are.
     /// </remarks>
-    public IReadOnlyList<CachedEvent> CachedEvents => _cache;
+    public IReadOnlyList<CachedEvent> CachedEvents
+    {
+        get { lock (_gate) return [.. _cache]; }
+    }
 
-    public void CacheEvent(int actorNumber, byte eventCode, object? data) =>
-        _cache.Add(new CachedEvent(actorNumber, eventCode, data));
+    public void CacheEvent(int actorNumber, byte eventCode, object? data)
+    {
+        lock (_gate) _cache.Add(new CachedEvent(actorNumber, eventCode, data));
+    }
 
     /// <summary>Removes cached events with this code raised by this actor.</summary>
-    public int RemoveCached(int actorNumber, byte eventCode) =>
-        _cache.RemoveAll(e => e.EventCode == eventCode && e.ActorNumber == actorNumber);
+    public int RemoveCached(int actorNumber, byte eventCode)
+    {
+        lock (_gate) return _cache.RemoveAll(e => e.EventCode == eventCode && e.ActorNumber == actorNumber);
+    }
 
     /// <summary>Drops everything cached by actors no longer present, keeping actor 0's globals.</summary>
-    public int RemoveCachedForAbsentActors() =>
-        _cache.RemoveAll(e => e.ActorNumber != 0 && Find(e.ActorNumber) is null);
+    public int RemoveCachedForAbsentActors()
+    {
+        lock (_gate) return _cache.RemoveAll(e => e.ActorNumber != 0 && Find(e.ActorNumber) is null);
+    }
 
     /// <summary>Drops everything this actor cached. Used when they leave.</summary>
-    public int RemoveCachedFor(int actorNumber) => _cache.RemoveAll(e => e.ActorNumber == actorNumber);
+    public int RemoveCachedFor(int actorNumber)
+    {
+        lock (_gate) return _cache.RemoveAll(e => e.ActorNumber == actorNumber);
+    }
 
     public Decision CheckSetProperties(Actor actor, Hashtable properties) =>
         _hooks.BeforeSetProperties(this, actor, properties);
