@@ -102,6 +102,12 @@ public static class Protocol18
                 stream.Write(v.Data, 0, v.Data.Length);
                 return;
 
+            case CustomTypeArray v:
+                stream.WriteByte((byte)GpType18.ObjectArray);
+                VarInt.WriteUnsigned(stream, (ulong)v.Elements.Length);
+                foreach (var element in v.Elements) Serialize(stream, element, registry);
+                return;
+
             case IDictionary v: stream.WriteByte((byte)GpType18.Dictionary); WriteDictionary(stream, v, registry); return;
 
             default:

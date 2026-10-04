@@ -163,8 +163,8 @@ public sealed class RaiseEventRequestAdapter(OperationRequest request) : IRaiseE
 
     public int[] Actors
     {
-        get => Get(ParameterCode.TargetActorNr) as int[];
-        set => Set(ParameterCode.TargetActorNr, value);
+        get => Get(ParameterCode.ActorList) as int[];
+        set => Set(ParameterCode.ActorList, value);
     }
 
     public string GameId { get; set; }

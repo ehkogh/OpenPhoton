@@ -331,11 +331,19 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
         _log($"[>] {connection}  [{peer.Role}] op {request.OperationCode}{Detail(request)}{parameters}");
 
         var response = await _byRole[peer.Role].DispatchAsync(peer, request);
-        await SendMessageAsync(connection, RtsMessageType.OperationResponse,
-            OperationDispatcher.SerialiseResponse(response, peer.Messages), ct);
 
-        _log($"[<] {connection}  op {response.OperationCode} -> rc {response.ReturnCode}"
-           + $"{(response.DebugMessage is null ? "" : $" \"{response.DebugMessage}\"")}");
+        if (response is not null)
+        {
+            await SendMessageAsync(connection, RtsMessageType.OperationResponse,
+                OperationDispatcher.SerialiseResponse(response, peer.Messages), ct);
+
+            _log($"[<] {connection}  op {response.OperationCode} -> rc {response.ReturnCode}"
+               + $"{(response.DebugMessage is null ? "" : $" \"{response.DebugMessage}\"")}");
+        }
+        else
+        {
+            _log($"[<] {connection}  op {request.OperationCode} -> (no response)");
+        }
 
         if (peer.AfterResponse is { } deferred)
         {
