@@ -27,11 +27,13 @@ public sealed class OperationDispatcher
 {
     readonly Dictionary<byte, OperationHandler> _handlers = [];
 
+    public static readonly OperationResponse NoResponse = new(0);
+
     public void Register(byte operationCode, OperationHandler handler) => _handlers[operationCode] = handler;
 
     public bool IsRegistered(byte operationCode) => _handlers.ContainsKey(operationCode);
 
-    public async ValueTask<OperationResponse> DispatchAsync(PeerState peer, OperationRequest request)
+    public async ValueTask<OperationResponse?> DispatchAsync(PeerState peer, OperationRequest request)
     {
         if (!_handlers.TryGetValue(request.OperationCode, out var handler))
         {
@@ -44,7 +46,8 @@ public sealed class OperationDispatcher
 
         try
         {
-            return await handler(peer, request) ?? new OperationResponse(request.OperationCode);
+            var response = await handler(peer, request) ?? new OperationResponse(request.OperationCode);
+            return ReferenceEquals(response, NoResponse) ? null : response;
         }
         catch (Exception ex)
         {

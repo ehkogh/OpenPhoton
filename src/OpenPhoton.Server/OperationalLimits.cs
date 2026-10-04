@@ -121,6 +121,8 @@ public sealed class OperationalLimits
         string text => text.Length * 2 + 3,
         byte[] bytes => bytes.Length + 5,
         System.Collections.Hashtable table => EstimateSize(table) + 3,
+        Photon.SocketServer.Rpc.Protocols.CustomTypeArray customs => CustomArraySize(customs),
+        Photon.SocketServer.Rpc.Protocols.UnknownCustomType custom => custom.Data.Length + 4,
         Array array => array.Length * 8 + 5,
         bool => 2,
         byte => 2,
@@ -132,4 +134,14 @@ public sealed class OperationalLimits
 
         _ => 16,
     };
+
+    static int CustomArraySize(Photon.SocketServer.Rpc.Protocols.CustomTypeArray array)
+    {
+        var total = 7;
+        foreach (var element in array.Elements)
+            total += element is Photon.SocketServer.Rpc.Protocols.UnknownCustomType raw
+                ? raw.Data.Length + 2
+                : 16;
+        return total;
+    }
 }

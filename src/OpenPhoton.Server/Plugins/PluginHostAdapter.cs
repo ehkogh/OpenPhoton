@@ -418,8 +418,8 @@ public sealed class PluginHostAdapter : IPluginHost, IAsyncDisposable
             {
                 [ParameterCode.Properties] = properties,
                 [ParameterCode.ActorNr] = actorNr,
+                [ParameterCode.TargetActorNr] = actorNr > 0 ? actorNr : 0,
             };
-            if (actorNr > 0) changed[ParameterCode.TargetActorNr] = actorNr;
 
             BroadcastEvent(ReciverGroup.All, 0, 0, EventCode.PropertiesChanged, changed, CacheOperations.DoNotCache);
         }

@@ -70,6 +70,25 @@ public static class Program
         };
 
         var explicitPorts = args.Where(a => int.TryParse(a, out _)).Select(int.Parse).ToArray();
+
+        if (explicitPorts.Length > 3)
+        {
+            Console.Error.WriteLine("Too many port arguments; expected at most three (nameserver, master, game).");
+            return 1;
+        }
+
+        if (explicitPorts.Length > 0)
+        {
+            endpoints = new ServerEndpoints
+            {
+                PublicHost = publicHost,
+                Regions = endpoints.Regions,
+                NameServerPort = explicitPorts[0],
+                MasterPort = explicitPorts.Length > 1 ? explicitPorts[1] : endpoints.MasterPort,
+                GameServerPort = explicitPorts.Length > 2 ? explicitPorts[2] : endpoints.GameServerPort,
+            };
+        }
+
         var ports = explicitPorts.Length > 0 ? explicitPorts : endpoints.Ports.ToArray();
 
         var udpPorts = args.Contains("--no-udp") ? [] : endpoints.UdpPorts.ToArray();
@@ -125,11 +144,13 @@ public static class Program
         var udp = new Transport.Enet.PhotonUdpListener(handshake, Console.WriteLine);
 
         var maintenance = handshake.RunMaintenanceAsync(cts.Token);
-        var serving = udpPorts.Length > 0 ? udp.RunAsync(udpPorts, cts.Token) : Task.CompletedTask;
+        var serving = udpPorts.Length > 0 ? udp.RunAsync(udpPorts, cts.Token) : null;
 
         try
         {
-            await Task.WhenAny(listener.RunAsync(ports, cts.Token), serving);
+            await (serving is null
+                ? listener.RunAsync(ports, cts.Token)
+                : Task.WhenAny(listener.RunAsync(ports, cts.Token), serving));
         }
         catch (OperationCanceledException) { }
         catch (InvalidOperationException ex)

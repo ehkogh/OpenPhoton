@@ -60,13 +60,15 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
     /// command is then resent until the peer is given up on, and a perfectly healthy
     /// connection drops a few seconds after it starts carrying traffic.
     /// </remarks>
+    readonly record struct PendingDelivery(ReadOnlyMemory<byte> Data, int Length);
+
     sealed class ChannelState
     {
         public int NextOutgoing;
 
         public int LastDelivered;
 
-        public readonly Dictionary<int, ReadOnlyMemory<byte>> Held = [];
+        public readonly Dictionary<int, PendingDelivery> Held = [];
 
         /// <summary>
         /// Reliable-unsequenced numbers already delivered on this channel.
@@ -209,7 +211,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
                         break;
 
                     case EnetCommandType.SendReliable:
-                        Deliver(command.Header.Channel, command.Header.ReliableSequenceNumber,
+                        Deliver(command.Header.Channel, command.Header.ReliableSequenceNumber, 1,
                                 command.Payload, messages);
                         break;
 
@@ -311,7 +313,8 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
     const int MaxRememberedUnsequenced = 4096;
 
     /// <summary>Delivers a reliable payload in order, holding anything that arrived early.</summary>
-    void Deliver(byte channel, int sequence, ReadOnlyMemory<byte> payload, List<ReadOnlyMemory<byte>> messages)
+    void Deliver(byte channel, int sequence, int length, ReadOnlyMemory<byte> payload,
+                 List<ReadOnlyMemory<byte>> messages)
     {
         var state = Channel(channel);
 
@@ -319,17 +322,17 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
         if (sequence != state.LastDelivered + 1)
         {
-            state.Held[sequence] = payload;
+            state.Held[sequence] = new PendingDelivery(payload, length);
             return;
         }
 
         messages.Add(payload);
-        state.LastDelivered = sequence;
+        state.LastDelivered = sequence + length - 1;
 
         while (state.Held.Remove(state.LastDelivered + 1, out var held))
         {
-            messages.Add(held);
-            state.LastDelivered++;
+            messages.Add(held.Data);
+            state.LastDelivered += held.Length;
         }
     }
 
@@ -359,8 +362,8 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
         if (totalLength < 0 || totalLength > MaxMessageSize) return;
         if (fragmentOffset < 0 || fragmentOffset > totalLength) return;
 
-        var group = (command.Header.Channel, startSequence,
-                     command.Type == EnetCommandType.SendFragmentUnsequenced);
+        var unsequenced = command.Type == EnetCommandType.SendFragmentUnsequenced;
+        var group = (command.Header.Channel, startSequence, unsequenced);
 
         if (!_fragments.TryGetValue(group, out var assembly))
         {
@@ -390,7 +393,13 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
             written += piece.Length;
         }
 
-        messages.Add(message.AsMemory(0, written));
+        if (unsequenced)
+        {
+            messages.Add(message.AsMemory(0, written));
+            return;
+        }
+
+        Deliver(command.Header.Channel, startSequence, fragmentCount, message.AsMemory(0, written), messages);
     }
 
     const int FragmentHeaderSize = 20;
