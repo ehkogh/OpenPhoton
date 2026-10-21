@@ -48,6 +48,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
     readonly object _gate = new();
 
+
     /// <summary>
     /// Sequencing state for one channel.
     /// </summary>
@@ -85,6 +86,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
     ChannelState Channel(byte id) =>
         _channels.TryGetValue(id, out var state) ? state : _channels[id] = new ChannelState();
 
+
     int _nextOutgoingUnreliable;
     readonly Dictionary<(byte Channel, int Sequence), PendingCommand> _awaitingAck = [];
     readonly Queue<byte[]> _outbound = new();
@@ -110,6 +112,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
         public int Attempts { get; set; }
     }
 
+
     readonly Dictionary<(byte Channel, int Sequence, bool Unsequenced), FragmentAssembly> _fragments = [];
 
     /// <summary>Pieces of one oversized message, waiting for the rest.</summary>
@@ -124,6 +127,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
         public bool IsComplete => Received >= Pieces.Length;
     }
 
+
     /// <summary>
     /// Answers a Connect command.
     /// </summary>
@@ -136,8 +140,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
     /// </remarks>
     public void AcceptConnect(EnetCommand connect)
     {
-        var payload = connect.Payload.ToArray();
-        if (payload.Length >= 2) BinaryPrimitives.WriteUInt16BigEndian(payload, PeerId);
+        var payload = VerifyConnectPayload(connect);
 
         lock (_gate)
         {
@@ -150,7 +153,46 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
         }
     }
 
+    /// <summary>Offset of the server feature flags in a VerifyConnect payload.</summary>
+    const int VerifyConnectFeatureFlagsOffset = 4;
+
+    /// <summary>Feature flag for Ack2 acknowledgements (command 17).</summary>
+    const ushort FeatureAck2 = 0x0001;
+
+    /// <summary>
+    /// The client's Connect payload, echoed with our peer id in and Ack2 declined.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Echoing agrees to everything the client proposed, which is right for the fields we have
+    /// not identified but wrong for the one we have: offset 4 holds the server's feature flags
+    /// (<c>NCommand</c> reads it into <c>ServerFeatureFlags</c>), bit 0 Ack2 and bit 1 a synced
+    /// reliable queue. A 2026 client proposes both. Echoed back, that told it this server
+    /// speaks Ack2 — command 17, which the receive path does not know — so it acknowledged
+    /// everything in a form we discarded, our reliable sends were never acknowledged, and the
+    /// peer was dropped once its resends ran out, a few seconds into a room.
+    /// </para>
+    /// <para>
+    /// Only Ack2 is declined. The synced queue (bit 1) was already proposed by earlier
+    /// clients and accepted by echoing, and they work with it, so it is left as they asked.
+    /// Declining is the server saying it lacks the feature, which a v5 client handles by
+    /// falling back to the classic acknowledgement.
+    /// </para>
+    /// </remarks>
+    byte[] VerifyConnectPayload(EnetCommand connect)
+    {
+        var payload = connect.Payload.ToArray();
+        if (payload.Length >= 2) BinaryPrimitives.WriteUInt16BigEndian(payload, PeerId);
+        if (payload.Length >= VerifyConnectFeatureFlagsOffset + 2)
+        {
+            var flags = payload.AsSpan(VerifyConnectFeatureFlagsOffset, 2);
+            BinaryPrimitives.WriteUInt16BigEndian(flags, (ushort)(BinaryPrimitives.ReadUInt16BigEndian(flags) & ~FeatureAck2));
+        }
+        return payload;
+    }
+
     int _lastIncomingTimestamp;
+
 
     /// <summary>What a received datagram amounted to, once the protocol was handled.</summary>
     public readonly record struct Received(IReadOnlyList<ReadOnlyMemory<byte>> Messages, bool Disconnected);
@@ -256,8 +298,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
     void AcceptConnectLocked(EnetCommand connect)
     {
-        var payload = connect.Payload.ToArray();
-        if (payload.Length >= 2) BinaryPrimitives.WriteUInt16BigEndian(payload, PeerId);
+        var payload = VerifyConnectPayload(connect);
 
         IsConnected = true;
 
@@ -275,22 +316,6 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
         _awaitingAck.Remove((command.Header.Channel, sequence));
     }
 
-    /// <summary>
-    /// Delivers a reliable-unsequenced payload straight away.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The whole point of the mode is that it does not wait: holding one of these back for a
-    /// gap that ordering would demand defeats what the client asked for, and the gap may
-    /// never close, because these numbers are handed out from a counter that is not the
-    /// ordered one.
-    /// </para>
-    /// <para>
-    /// Duplicates still have to be suppressed. A lost acknowledgement makes the client resend
-    /// an identical command, and delivering it twice runs the operation twice — in practice
-    /// that is a duplicated game event, which is worse than a dropped one.
-    /// </para>
-    /// </remarks>
     void DeliverUnsequenced(byte channel, int sequence, ReadOnlyMemory<byte> payload,
                             List<ReadOnlyMemory<byte>> messages)
     {
@@ -396,6 +421,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
     const int FragmentHeaderSize = 20;
     const int MaxFragments = 4096;
     const int MaxMessageSize = 512_000;
+
 
     /// <summary>Queues an application message, fragmenting it if it will not fit.</summary>
     public void Send(ReadOnlyMemory<byte> message, bool reliable = true, byte channel = 0)
@@ -520,6 +546,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
     /// <summary>Milliseconds since this process started, which is what Photon timestamps are.</summary>
     public static int Timestamp => Environment.TickCount;
+
 
     /// <summary>How long an unacknowledged command waits before being sent again.</summary>
     public TimeSpan RetransmitAfter { get; set; } = TimeSpan.FromMilliseconds(400);

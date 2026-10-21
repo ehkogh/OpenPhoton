@@ -66,8 +66,8 @@ public sealed class PhotonUdpListener(IPhotonMessageHandler handler, Action<stri
             }
 
             try { socket.Client.IOControl(SioUdpConnectionReset, [0, 0, 0, 0], null); }
-            catch (SocketException) { }
-            catch (PlatformNotSupportedException) { }
+            catch (SocketException) { /* not Windows */ }
+            catch (PlatformNotSupportedException) { /* not Windows */ }
 
             _log($"listening on udp :{port}");
             running.Add(ReceiveLoopAsync(socket, port, ct));
@@ -150,13 +150,13 @@ public sealed class PhotonUdpListener(IPhotonMessageHandler handler, Action<stri
 
         foreach (var message in result.Messages)
         {
-            if (!RtsFraming.TryReadHeader(message.Span, out var rtsHeader))
+            if (!PhotonMessages.TryRead(message, out var rtsHeader, out var body))
             {
                 _log($"[!] {connection.Raw}: payload with no RTS header, dropped");
                 continue;
             }
 
-            await _handler.OnMessageAsync(connection.Raw, rtsHeader, message[rtsHeader.SizeInBytes..], ct);
+            await _handler.OnMessageAsync(connection.Raw, rtsHeader, body, ct);
         }
 
         await FlushAsync(connection, ct);
@@ -221,7 +221,7 @@ public sealed class PhotonUdpListener(IPhotonMessageHandler handler, Action<stri
             {
                 await socket.SendAsync(datagram, datagram.Length, peer.EndPoint);
             }
-            catch (SocketException) { }
+            catch (SocketException) { /* the peer will be expired by the service loop */ }
             catch (ObjectDisposedException) { return; }
         }
     }

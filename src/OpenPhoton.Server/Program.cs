@@ -21,6 +21,10 @@ public static class Program
           --no-udp              Serve TCP only. UDP is Photon's default transport, so
                                 most clients will not connect without it.
           <numbers>             Override the TCP ports. Order: nameserver, master, game.
+          --wss-cert <file>     Serve the name server over secure WebSocket, with this
+          --wss-key <file>      PEM certificate and key. Current clients reach the name
+                                server this way first (AuthOnceWss) and use UDP after.
+          --wss-port <port>     Port for it. (default: 443)
 
         Plugins
           --plugins <dir>       Directory holding plugin.config.
@@ -69,7 +73,9 @@ public static class Program
             Regions = regions is { Length: > 0 } ? regions : new ServerEndpoints().Regions,
         };
 
-        var explicitPorts = args.Where(a => int.TryParse(a, out _)).Select(int.Parse).ToArray();
+        var explicitPorts = args
+            .Where((a, i) => int.TryParse(a, out _) && (i == 0 || !args[i - 1].StartsWith("--")))
+            .Select(int.Parse).ToArray();
         var ports = explicitPorts.Length > 0 ? explicitPorts : endpoints.Ports.ToArray();
 
         var udpPorts = args.Contains("--no-udp") ? [] : endpoints.UdpPorts.ToArray();
@@ -127,9 +133,21 @@ public static class Program
         var maintenance = handshake.RunMaintenanceAsync(cts.Token);
         var serving = udpPorts.Length > 0 ? udp.RunAsync(udpPorts, cts.Token) : Task.CompletedTask;
 
+        var webSocket = Task.CompletedTask;
+        if (Option(args, "--wss-cert") is { } certFile)
+        {
+            var keyFile = Option(args, "--wss-key")
+                          ?? throw new ArgumentException("--wss-cert needs --wss-key alongside it.");
+            var wssPort = int.TryParse(Option(args, "--wss-port"), out var p) ? p : endpoints.NameServerPortSecureWebSocket;
+            var certificate = LoadCertificate(certFile, keyFile);
+
+            Console.WriteLine($"  NameServer  wss :{wssPort}  ({certificate.Subject}, expires {certificate.NotAfter:yyyy-MM-dd})");
+            webSocket = new PhotonWebSocketListener(handshake, certificate, Console.WriteLine).RunAsync([wssPort], cts.Token);
+        }
+
         try
         {
-            await Task.WhenAny(listener.RunAsync(ports, cts.Token), serving);
+            await Task.WhenAny(listener.RunAsync(ports, cts.Token), serving, webSocket);
         }
         catch (OperationCanceledException) { }
         catch (InvalidOperationException ex)
@@ -145,6 +163,19 @@ public static class Program
 
         Console.WriteLine("stopped");
         return 0;
+    }
+
+    /// <summary>Loads a PEM certificate and key into something TLS on every OS can use.</summary>
+    /// <remarks>
+    /// A key read from PEM is ephemeral, and Windows' TLS stack refuses ephemeral keys with an
+    /// error about missing credentials that names neither the key nor the format. Round-tripping
+    /// through PKCS#12 gives it a key it will accept; elsewhere the round trip is harmless.
+    /// </remarks>
+    static System.Security.Cryptography.X509Certificates.X509Certificate2 LoadCertificate(string certFile, string keyFile)
+    {
+        using var pem = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPemFile(certFile, keyFile);
+        return new System.Security.Cryptography.X509Certificates.X509Certificate2(
+            pem.Export(System.Security.Cryptography.X509Certificates.X509ContentType.Pkcs12));
     }
 
     /// <summary>Reads <c>--name value</c>, or null when absent or unaccompanied.</summary>

@@ -106,7 +106,7 @@ public sealed class PhotonTcpListener(IRawConnectionHandler handler, Action<stri
                 ArrayPool<byte>.Shared.Return(buffer);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { /* shutting down */ }
         catch (Exception ex)
         {
             failure = ex;

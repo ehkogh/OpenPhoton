@@ -101,6 +101,7 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
     readonly MatchmakingOperations _matchmaking;
     readonly ServerEndpoints _endpoints;
     readonly AuthTokenIssuer _tokens;
+    readonly SessionSecrets _secrets = new();
     readonly LobbyService _lobby;
 
     readonly Dictionary<ServerRole, OperationDispatcher> _byRole;
@@ -156,7 +157,7 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
         _lobby = new LobbyService(log);
         _limits = limits ?? OperationalLimits.Default;
         _roomOperations = new RoomOperations(_rooms, _lobby, log, _limits);
-        _matchmaking = new MatchmakingOperations(_rooms, _endpoints, _tokens, _lobby, log, _limits);
+        _matchmaking = new MatchmakingOperations(_rooms, _endpoints, _tokens, _lobby, log, _limits, _secrets);
 
         var nameServer = new OperationDispatcher();
         _matchmaking.RegisterNameServer(nameServer);
@@ -227,17 +228,22 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
 
     public ValueTask OnConnectedAsync(RawConnection connection, CancellationToken ct)
     {
-        var role = _endpoints.RoleFor(connection.LocalPort);
+        var role = _endpoints.RoleFor(connection.LocalPort, connection.Transport);
 
-        var transport = connection.Framing == MessageFraming.Datagram
-            ? Photon.SocketServer.NetworkProtocolType.Udp
-            : Photon.SocketServer.NetworkProtocolType.Tcp;
+        var transport = connection.Transport;
 
         var peer = new PeerState { Role = role, Transport = transport };
         peer.Channel = new ConnectionChannel(connection, peer);
         _peers[connection.Id] = peer;
 
-        _log($"[+] {connection}  as {role} over {transport}");
+        if (connection.NegotiatedProtocol is { } negotiated && MessageProtocol.IsSupported(negotiated))
+        {
+            peer.Protocol = negotiated;
+            peer.Messages = MessageProtocol.For(negotiated);
+        }
+
+        _log($"[+] {connection}  as {role} over {transport}"
+           + $"{(connection.NegotiatedProtocol is { } p ? $" ({p})" : "")}");
         return ValueTask.CompletedTask;
     }
 
@@ -276,6 +282,12 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
 
     async ValueTask HandleInitAsync(RawConnection connection, PeerState peer, ReadOnlyMemory<byte> body, CancellationToken ct)
     {
+        if (TokenInitRequest.IsTokenInit(body.Span))
+        {
+            await HandleTokenInitAsync(connection, peer, body, ct);
+            return;
+        }
+
         if (!InitRequest.TryParse(body.Span, out var request, out var error))
         {
             _log($"[!] {connection}  bad init: {error}");
@@ -300,6 +312,61 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
 
         await connection.SendMessageAsync(message, ct);
         _log($"[<] {connection}  init response");
+    }
+
+    /// <summary>
+    /// An init that carries a token: the client's whole authentication on this server.
+    /// </summary>
+    /// <remarks>
+    /// Under AuthOnce the client does not send Authenticate to the master or game server; the
+    /// token in this init is all it presents. So this is where the peer becomes who the name
+    /// server said it was, and where payload encryption starts if the name server handed out
+    /// a secret — the client switches it on as soon as it is connected, with no exchange.
+    /// </remarks>
+    async ValueTask HandleTokenInitAsync(RawConnection connection, PeerState peer, ReadOnlyMemory<byte> body, CancellationToken ct)
+    {
+        if (!TokenInitRequest.TryParse(body.Span, out var request, out var error))
+        {
+            _log($"[!] {connection}  bad token init: {error}");
+            connection.Close();
+            return;
+        }
+
+        if (!MessageProtocol.IsSupported(request!.Protocol))
+        {
+            _log($"[!] {connection}  unsupported protocol {request.Protocol}, closing");
+            connection.Close();
+            return;
+        }
+
+        peer.Protocol = request.Protocol;
+        peer.Messages = MessageProtocol.For(request.Protocol);
+        peer.ApplicationId = request.ApplicationId;
+        _log($"[i] {connection}  {request}");
+
+        var message = new byte[InitResponse.Size];
+        InitResponse.Write(message);
+        await connection.SendMessageAsync(message, ct);
+        _log($"[<] {connection}  init response");
+
+        if (request.Token is null || peer.Role == ServerRole.NameServer) return;
+
+        var authenticate = new OperationRequest((byte)OperationCode.Authenticate, new Dictionary<byte, object?>
+        {
+            [ParameterCode.Token] = request.Token,
+        });
+        var response = await _byRole[peer.Role].DispatchAsync(peer, authenticate);
+        await SendMessageAsync(connection, RtsMessageType.OperationResponse,
+            OperationDispatcher.SerialiseResponse(response, peer.Messages), ct);
+        _log($"[<] {connection}  authenticate (from token init) -> rc {response.ReturnCode}"
+           + $"{(response.DebugMessage is null ? "" : $" \"{response.DebugMessage}\"")}");
+
+        if (peer.Authenticated && peer.UserId is { } userId && _secrets.TryGet(userId, out var secret))
+        {
+            peer.EncryptionKey = secret;
+            peer.Crypto = new RijndaelCryptoProvider(secret);
+            _log($"    payload encryption on for {userId}");
+        }
     }
 
     async ValueTask HandleOperationAsync(RawConnection connection, PeerState peer, ReadOnlyMemory<byte> body, CancellationToken ct)
@@ -344,15 +411,6 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
         }
     }
 
-    /// <summary>
-    /// The one detail that makes an operation identifiable in a log.
-    /// </summary>
-    /// <remarks>
-    /// Only RaiseEvent, and only its event code. A parameter list of <c>{244, 245}</c> is the
-    /// same for every event a client ever sends, so a log full of them says a client is
-    /// talking without ever saying what about — and for many clients the event code is the entire
-    /// protocol above Photon.
-    /// </remarks>
     static string Detail(OperationRequest request)
     {
         if (request.OperationCode != (byte)OperationCode.RaiseEvent) return "";
@@ -447,6 +505,12 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
             return;
         }
 
+        if (request.OperationCode == PingOperation)
+        {
+            await AnswerPingOperationAsync(connection, peer, request, ct);
+            return;
+        }
+
         if (request.OperationCode != ExchangeKeysForEncryption)
         {
             _log($"[?] {connection}  internal op {request.OperationCode} not implemented");
@@ -488,6 +552,48 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
 
         _log($"[<] {connection}  key exchange complete "
            + $"(secret {peer.SharedSecret.Length}B, key {peer.EncryptionKey.Length}B)");
+    }
+
+    /// <summary>Internal operation code for a ping on message-framed transports.</summary>
+    const byte PingOperation = 1;
+
+    /// <summary>Parameter carrying the client's timestamp, echoed back.</summary>
+    const byte PingClientTime = 1;
+
+    /// <summary>Parameter carrying the server's timestamp.</summary>
+    const byte PingServerTime = 2;
+
+    /// <summary>
+    /// Answers a ping sent as internal operation 1, which is how WebSocket clients ping.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The raw <c>0xF0</c> ping only exists on TCP's byte stream; on WebSocket the client
+    /// sends an internal operation instead (<c>TPeer.SendPing</c> when not framing) and reads
+    /// the reply's parameter 2 as server time and parameter 1 as its own time echoed
+    /// (<c>TPeer.ReadPingResult</c>), both as <c>int</c>.
+    /// </para>
+    /// <para>
+    /// The first reply is also the client's init response. A WebSocket client with no token
+    /// sends no init at all; when this reply arrives while it is still connecting it sets
+    /// <c>PingUsedAsInit</c> and declares itself connected. Without it the client sits in
+    /// Connecting until it times out, never having sent a single operation.
+    /// </para>
+    /// </remarks>
+    async ValueTask AnswerPingOperationAsync(RawConnection connection, PeerState peer, OperationRequest request, CancellationToken ct)
+    {
+        var clientTime = request.Parameters is not null && request.Parameters.TryGetValue(PingClientTime, out var sent)
+            ? sent
+            : 0;
+
+        var response = new OperationResponse(PingOperation, new Dictionary<byte, object?>
+        {
+            [PingClientTime] = clientTime is int ? clientTime : Convert.ToInt32(clientTime),
+            [PingServerTime] = ServerTimestamp,
+        });
+
+        await SendMessageAsync(connection, RtsMessageType.InternalOperationResponse,
+            OperationDispatcher.SerialiseResponse(response, peer.Messages), ct);
     }
 
     static string HexDump(ReadOnlySpan<byte> data, int maxBytes = 320)
@@ -570,6 +676,7 @@ public sealed class HandshakeHandler : IPhotonMessageHandler
 
         public void Close() => _connection.Close();
     }
+
 
     void RegisterOperations()
     {

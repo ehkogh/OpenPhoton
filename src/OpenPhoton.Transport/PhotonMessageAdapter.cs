@@ -65,14 +65,14 @@ public sealed class PhotonMessageAdapter(IPhotonMessageHandler handler, Action<s
                 continue;
             }
 
-            if (!RtsFraming.TryReadHeader(frame, out var header))
+            if (!PhotonMessages.TryRead(frame, out var header, out var body))
             {
                 _log($"{connection}: record with unrecognised message header, closing");
                 connection.Close();
                 return;
             }
 
-            await _handler.OnMessageAsync(connection, header, frame.AsMemory(header.SizeInBytes), ct);
+            await _handler.OnMessageAsync(connection, header, body, ct);
         }
     }
 

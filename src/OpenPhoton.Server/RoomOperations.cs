@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using OpenPhoton.Realtime.Protocol;
 using OpenPhoton.Server.Plugins;
 using OpenPhoton.Server.Rooms;
@@ -72,6 +72,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
         return ValueTask.FromResult<OperationResponse?>(new OperationResponse(request.OperationCode));
     }
 
+
     /// <summary>
     /// CreateGame on the game server: enter the room, creating it only if needed.
     /// </summary>
@@ -115,50 +116,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
             ? (JoinMode)value
             : JoinMode.Default;
 
-    /// <summary>
-    /// Whether a room is a client-side local instance rather than a hosted one.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Clients name these <c>local:error_&lt;n&gt;</c> and similar. They are the client's own
-    /// offline worlds â€” most importantly the error world it falls back to when a real world
-    /// fails to load â€” and the client still opens a Photon connection for them.
-    /// </para>
-    /// <para>
-    /// A local instance has no instance token by definition: nothing issued one, because the
-    /// API was never asked to place the player anywhere. Running the plugin's authorisation
-    /// over it therefore always fails, and the failure replaces whatever the original problem
-    /// was with "Invalid JWT presented" â€” so the player is told their credentials are bad
-    /// when in fact a world would not download. Worse, the client cannot even reach the error
-    /// world to display that, so it retries and eventually gives up.
-    /// </para>
-    /// <para>
-    /// These rooms are still served normally; only the plugin gate is skipped.
-    /// </para>
-    /// </remarks>
-    static bool IsLocalInstance(string roomName) =>
-        roomName.StartsWith("local:", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// The plugin that should see this room's traffic, or null where it must not.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Every plugin callback goes through here rather than reading <see cref="Room.Plugin"/>
-    /// and testing the room name alongside it. Written out at each site, the test was applied
-    /// to joining, leaving and closing but not to raising events or setting properties — and
-    /// a partial bypass is worse than none at all. The plugin never saw the actor arrive, so
-    /// the first event it was asked about named an actor it had no record of; the reference plugin
-    /// answers that with an exception, the operation fails, and the player is ejected from
-    /// the error world they were already in.
-    /// </para>
-    /// <para>
-    /// One accessor means adding a callback cannot reintroduce that: there is nowhere to
-    /// forget the rule.
-    /// </para>
-    /// </remarks>
-    static PluginBridge? ActivePlugin(Room room) =>
-        IsLocalInstance(room.Name) ? null : room.Plugin;
+    static PluginBridge? ActivePlugin(Room room) => room.Plugin;
 
     async ValueTask<OperationResponse?> EnterAsync(PeerState peer, OperationRequest request, Room room, bool created)
     {
@@ -250,6 +208,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
                     verdict.ErrorCode == 0 ? ErrorCode.PluginReportedError : verdict.ErrorCode,
                     verdict.Message ?? "Rejected by plugin.");
             }
+
 
             if (GetHashtable(request, ParameterCode.PlayerProperties) is { } rewritten)
             {
@@ -357,6 +316,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
         return all;
     }
 
+
     async ValueTask<OperationResponse?> LeaveAsync(PeerState peer, OperationRequest request)
     {
         var room = peer.CurrentRoom;
@@ -455,13 +415,6 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
     {
         if (room.Plugin is not { } plugin) return;
 
-        if (IsLocalInstance(room.Name))
-        {
-            room.Plugin = null;
-            await plugin.DisposeAsync();
-            return;
-        }
-
         var actorCount = room.Actors.Count;
 
         plugin.BeforeCloseGame();
@@ -487,6 +440,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
         foreach (var room in closedRooms) await CloseAsync(room);
         return result;
     }
+
 
     async ValueTask<OperationResponse?> RaiseEventAsync(PeerState peer, OperationRequest request)
     {
@@ -548,6 +502,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
 
         return new OperationResponse(request.OperationCode);
     }
+
 
     async ValueTask<OperationResponse?> SetPropertiesAsync(PeerState peer, OperationRequest request)
     {
@@ -634,6 +589,7 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
             }));
     }
 
+
     /// <summary>
     /// Applies a cache instruction. Returns true when the request was cache maintenance
     /// with nothing to relay.
@@ -693,26 +649,6 @@ public sealed class RoomOperations(RoomRegistry rooms, LobbyService lobby, Actio
         if (sent.Count > 0) _log($"    [ev {payload.Code}] -> actor {string.Join(", ", sent)}");
     }
 
-    /// <summary>
-    /// Writes the current master client into the room's properties.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The master client is a well-known room property (248), not merely a server-side
-    /// notion. A client learns which actor it is from the game properties in its join
-    /// response, and thereafter from a properties-changed event; there is no other channel
-    /// for it, and no operation to ask.
-    /// </para>
-    /// <para>
-    /// Leaving it unset does not fail anything visibly. The join succeeds, the client reports
-    /// itself in the room, and then nothing happens: the client will not begin its own room setup
-    /// until it knows whether it is the master, because that decides whether it is the one
-    /// responsible for instantiating the world's networked objects. With the property absent
-    /// the first player waits for a master that, as far as it can tell, is not there — and
-    /// eventually gives up with "Could not enter the network room in time".
-    /// </para>
-    /// </remarks>
-    /// <returns>Whether the value changed, and so needs announcing.</returns>
     static bool SyncMasterClient(Room room)
     {
         var current = room.MasterClientId;

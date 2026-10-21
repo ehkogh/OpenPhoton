@@ -38,6 +38,14 @@ All ports are opened by the server. If hosting across a firewall or NAT, forward
 
 Both UDP port generations are supported for compatibility with different Photon client versions.
 
+The name server can also listen on secure WebSocket (WSS) port 443. Supply a PEM certificate and key to enable it:
+
+```sh
+openphoton --host your.server.example --wss-cert cert.pem --wss-key key.pem
+```
+
+Use `--wss-port` to change the port. Clients using AuthOnceWss connect to the name server over WSS, then use their configured transport for the master and game servers.
+
 ## Plugins
 
 Place plugins in `plugins/` with a Photon-format `plugin.config`.
@@ -75,8 +83,9 @@ Use `--require-auth` to also reject clients that provide no authentication crede
 Supported:
 
 * GpBinary V16 and V18
-* TCP and reliable UDP
+* TCP, reliable UDP, and secure WebSocket for the name server
 * Diffie–Hellman and AES-256
+* AuthOnce token handoff and payload encryption
 * NameServer → Master → GameServer handoff
 * Rooms, actors, properties, events, interest groups, and event caching
 * Lobbies, room listings, and random matchmaking
@@ -86,7 +95,7 @@ Supported:
 
 Not supported:
 
-* WebSocket or WebRTC transports
+* WebRTC transport
 * Multi-machine deployments
 * Photon Chat
 * WebRPC

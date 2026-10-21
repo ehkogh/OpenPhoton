@@ -1,5 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
+using Photon.SocketServer;
+using Photon.SocketServer.Rpc.Protocols;
+using ProtocolType = Photon.SocketServer.Rpc.Protocols.ProtocolType;
 
 namespace OpenPhoton.Transport;
 
@@ -36,6 +39,7 @@ public sealed class RawConnection
         RemoteEndPoint = socket.RemoteEndPoint;
         LocalEndPoint = socket.LocalEndPoint;
         Framing = MessageFraming.TcpRecord;
+        Transport = NetworkProtocolType.Tcp;
     }
 
     /// <summary>A datagram-backed connection, where sending and closing belong to the peer.</summary>
@@ -50,6 +54,7 @@ public sealed class RawConnection
         _close = close;
         _isConnected = isConnected;
         Framing = MessageFraming.Datagram;
+        Transport = NetworkProtocolType.Udp;
     }
 
     public long Id { get; }
@@ -59,6 +64,21 @@ public sealed class RawConnection
     public EndPoint? LocalEndPoint { get; }
 
     public MessageFraming Framing { get; }
+
+    /// <summary>The transport the client is using, as Photon names it.</summary>
+    /// <remarks>
+    /// Not derivable from <see cref="Framing"/>: a WebSocket is message-framed like a
+    /// datagram, but it must be told about WebSocket addresses and does not run the key
+    /// exchange. Set by whichever listener built the connection.
+    /// </remarks>
+    public NetworkProtocolType Transport { get; init; }
+
+    /// <summary>Serialisation agreed before any Photon message, if the transport negotiates one.</summary>
+    /// <remarks>
+    /// WebSocket clients name it in <c>Sec-WebSocket-Protocol</c> and then send no binary
+    /// init at all, so for them this is the only place the protocol is ever stated.
+    /// </remarks>
+    public ProtocolType? NegotiatedProtocol { get; init; }
 
     /// <summary>Port the client connected to. Photon assigns roles by port, so this identifies the server role.</summary>
     public int LocalPort => (LocalEndPoint as IPEndPoint)?.Port ?? 0;
@@ -122,8 +142,8 @@ public sealed class RawConnection
         }
 
         try { _socket!.Shutdown(SocketShutdown.Both); }
-        catch (SocketException) { }
-        catch (ObjectDisposedException) { }
+        catch (SocketException) { /* already gone */ }
+        catch (ObjectDisposedException) { /* already closed */ }
 
         _stream!.Dispose();
         _socket!.Dispose();

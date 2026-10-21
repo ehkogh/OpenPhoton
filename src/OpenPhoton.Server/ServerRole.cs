@@ -40,16 +40,6 @@ public sealed class ServerEndpoints
 
     public int GameServerPort { get; init; } = Realtime.Protocol.DefaultPorts.Tcp.GameServer;
 
-    /// <summary>
-    /// Regions advertised by the name server, all pointing at this deployment.
-    /// </summary>
-    /// <remarks>
-    /// A self-hosted server is one machine, but the client picks a region by name and will
-    /// not connect if the one it wants is missing. One client asks for these specific four, so
-    /// The reference plugin's install instructions require entries for all of them (plus <c>/*</c> cluster
-    /// wildcards) even on a single-box deployment. Advertising one "local" region would
-    /// leave a client asking for "us" with nowhere to go.
-    /// </remarks>
     public IReadOnlyList<string> Regions { get; init; } = ["us", "usw", "eu", "jp"];
 
     /// <summary>Region reported when a single name is needed.</summary>
@@ -64,6 +54,9 @@ public sealed class ServerEndpoints
     /// walks straight into a port that does not speak its protocol.
     /// </remarks>
     public int MasterPortUdp { get; init; } = Realtime.Protocol.DefaultPorts.UdpLegacy.MasterServer;
+
+    /// <summary>Name server over secure WebSocket: the client's built-in default.</summary>
+    public int NameServerPortSecureWebSocket { get; init; } = 443;
 
     public int MasterPortWebSocket { get; init; } = 9090;
 
@@ -125,6 +118,17 @@ public sealed class ServerEndpoints
     /// Both UDP port generations map to the same roles, because both are bound — see
     /// <see cref="UdpPorts"/> for why.
     /// </remarks>
+    public ServerRole RoleFor(int localPort, Photon.SocketServer.NetworkProtocolType transport)
+    {
+        if (transport is Photon.SocketServer.NetworkProtocolType.WebSocket
+                      or Photon.SocketServer.NetworkProtocolType.SecureWebSocket)
+        {
+            return ServerRole.NameServer;
+        }
+
+        return RoleFor(localPort);
+    }
+
     public ServerRole RoleFor(int localPort)
     {
         if (localPort == NameServerPort

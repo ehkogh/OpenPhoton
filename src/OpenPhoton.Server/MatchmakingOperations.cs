@@ -30,14 +30,17 @@ public sealed class MatchmakingOperations(
     AuthTokenIssuer tokens,
     LobbyService lobby,
     Action<string> log,
-    OperationalLimits? limits = null)
+    OperationalLimits? limits = null,
+    SessionSecrets? secrets = null)
 {
     readonly RoomRegistry _rooms = rooms;
     readonly ServerEndpoints _endpoints = endpoints;
     readonly AuthTokenIssuer _tokens = tokens;
+    readonly SessionSecrets _secrets = secrets ?? new SessionSecrets();
     readonly LobbyService _lobby = lobby;
     readonly Action<string> _log = log;
     readonly OperationalLimits _limits = limits ?? OperationalLimits.Default;
+
 
     public void RegisterNameServer(OperationDispatcher dispatcher)
     {
@@ -68,23 +71,76 @@ public sealed class MatchmakingOperations(
         peer.UserId = verdict.UserId ?? ResolveUserId(request);
         peer.Authenticated = true;
 
+        var next = NextTransport(peer, request);
         var response = new Dictionary<byte, object?>
         {
-            [ParameterCode.Address] = _endpoints.MasterAddressFor(peer.Transport),
+            [ParameterCode.Address] = _endpoints.MasterAddressFor(next),
             [ParameterCode.UserId] = peer.UserId,
             [ParameterCode.Token] = IssueToken(peer.UserId!),
         };
 
+        if (EncryptionDataFor(peer, request) is { } encryption) response[ParameterCode.EncryptionData] = encryption;
         if (verdict.Nickname is not null) response[ParameterCode.NickName] = verdict.Nickname;
         if (verdict.Data is not null) response[ParameterCode.Data] = verdict.Data;
 
+        _log($"    master for {peer.UserId}: {response[ParameterCode.Address]} ({next})"
+           + $"{(response.ContainsKey(ParameterCode.EncryptionData) ? ", payload encryption secret issued" : "")}");
+
         return await Ok(request, response);
+    }
+
+    /// <summary>
+    /// The transport the client will use for the master and game server.
+    /// </summary>
+    /// <remarks>
+    /// Not necessarily the one it is on now. Under <c>AuthMode.AuthOnceWss</c> the client
+    /// reaches the name server over secure WebSocket and then switches to its configured
+    /// protocol — usually UDP — as soon as this response arrives, and it says which in
+    /// <c>ExpectedProtocol</c>. Answering with an address for the current transport sends a
+    /// UDP client to a WebSocket port.
+    /// </remarks>
+    static Photon.SocketServer.NetworkProtocolType NextTransport(PeerState peer, OperationRequest request)
+    {
+        if (request.Parameters is not null
+            && request.Parameters.TryGetValue(ParameterCode.ExpectedProtocol, out var expected)
+            && expected is byte value)
+        {
+            return (Photon.SocketServer.NetworkProtocolType)value;
+        }
+
+        return peer.Transport;
+    }
+
+    /// <summary>Photon's <c>EncryptionMode.PayloadEncryption</c>.</summary>
+    const byte PayloadEncryptionMode = 0;
+
+    Dictionary<byte, object?>? EncryptionDataFor(PeerState peer, OperationRequest request)
+    {
+        var mode = request.Parameters is not null
+                   && request.Parameters.TryGetValue(ParameterCode.EncryptionMode, out var requested)
+                   && requested is byte b
+            ? b
+            : PayloadEncryptionMode;
+
+        if (mode != PayloadEncryptionMode)
+            _log($"    client asked for encryption mode {mode}; serving payload encryption (0) instead");
+
+        return new Dictionary<byte, object?>
+        {
+            [0] = PayloadEncryptionMode,
+            [1] = _secrets.Issue(peer.UserId!),
+        };
     }
 
     ValueTask<OperationResponse?> GetRegions(PeerState peer, OperationRequest request)
     {
         var regions = _endpoints.Regions.ToArray();
-        var addresses = regions.Select(_ => _endpoints.MasterAddressFor(peer.Transport)).ToArray();
+
+        var transport = peer.Transport is Photon.SocketServer.NetworkProtocolType.WebSocket
+                                       or Photon.SocketServer.NetworkProtocolType.SecureWebSocket
+            ? Photon.SocketServer.NetworkProtocolType.Udp
+            : peer.Transport;
+        var addresses = regions.Select(_ => _endpoints.MasterAddressFor(transport)).ToArray();
 
         return Ok(request, new Dictionary<byte, object?>
         {
@@ -92,6 +148,7 @@ public sealed class MatchmakingOperations(
             [ParameterCode.Address] = addresses,
         });
     }
+
 
     public void RegisterMaster(OperationDispatcher dispatcher)
     {
@@ -250,6 +307,7 @@ public sealed class MatchmakingOperations(
         [ParameterCode.RoomName] = roomName,
         [ParameterCode.Token] = IssueToken(peer.UserId ?? "anonymous"),
     };
+
 
     string IssueToken(string userId) => _tokens.Issue(userId);
 
