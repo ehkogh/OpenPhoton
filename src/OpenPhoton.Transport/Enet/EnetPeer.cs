@@ -67,7 +67,7 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
         public int LastDelivered;
 
-        public readonly Dictionary<int, ReadOnlyMemory<byte>> Held = [];
+        public readonly Dictionary<int, (ReadOnlyMemory<byte> Payload, int Count)> Held = [];
 
         /// <summary>
         /// Reliable-unsequenced numbers already delivered on this channel.
@@ -337,6 +337,15 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
     /// <summary>Delivers a reliable payload in order, holding anything that arrived early.</summary>
     void Deliver(byte channel, int sequence, ReadOnlyMemory<byte> payload, List<ReadOnlyMemory<byte>> messages)
+        => DeliverOrdered(channel, sequence, 1, payload, messages);
+
+    /// <summary>
+    /// Delivers a reliable message that occupies <paramref name="count"/> sequence numbers
+    /// starting at <paramref name="sequence"/>: one for an ordinary command, one per fragment
+    /// for a reassembled message.
+    /// </summary>
+    void DeliverOrdered(byte channel, int sequence, int count, ReadOnlyMemory<byte> payload,
+                        List<ReadOnlyMemory<byte>> messages)
     {
         var state = Channel(channel);
 
@@ -344,17 +353,17 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
 
         if (sequence != state.LastDelivered + 1)
         {
-            state.Held[sequence] = payload;
+            state.Held[sequence] = (payload, count);
             return;
         }
 
         messages.Add(payload);
-        state.LastDelivered = sequence;
+        state.LastDelivered = sequence + count - 1;
 
         while (state.Held.Remove(state.LastDelivered + 1, out var held))
         {
-            messages.Add(held);
-            state.LastDelivered++;
+            messages.Add(held.Payload);
+            state.LastDelivered += held.Count;
         }
     }
 
@@ -415,7 +424,11 @@ public sealed class EnetPeer(ushort peerId, IPEndPoint endPoint, int challenge, 
             written += piece.Length;
         }
 
-        messages.Add(message.AsMemory(0, written));
+        if (group.Item3)
+            DeliverUnsequenced(command.Header.Channel, startSequence, message.AsMemory(0, written), messages);
+        else
+            DeliverOrdered(command.Header.Channel, startSequence, fragmentCount,
+                           message.AsMemory(0, written), messages);
     }
 
     const int FragmentHeaderSize = 20;
