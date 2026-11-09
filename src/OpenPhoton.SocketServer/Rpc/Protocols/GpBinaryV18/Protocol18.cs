@@ -83,6 +83,18 @@ public static class Protocol18
                 foreach (var item in v) Serialize(stream, item, registry);
                 return;
 
+            case IDictionary[] v when v.GetType().GetElementType() is { IsGenericType: true } dictionaryType
+                                    && dictionaryType.GetGenericTypeDefinition() == typeof(Dictionary<,>):
+            {
+                stream.WriteByte((byte)GpType18.DictionaryArray);
+                var (keyType, valueType) = DictionaryTypes(dictionaryType);
+                stream.WriteByte((byte)keyType);
+                stream.WriteByte((byte)valueType);
+                VarInt.WriteUnsigned(stream, (ulong)v.Length);
+                foreach (var dictionary in v) WriteDictionaryEntries(stream, dictionary, keyType, valueType, registry);
+                return;
+            }
+
             case object?[] v:
                 stream.WriteByte((byte)GpType18.ObjectArray);
                 VarInt.WriteUnsigned(stream, (ulong)v.Length);
@@ -182,6 +194,12 @@ public static class Protocol18
         var (keyType, valueType) = DictionaryTypes(v.GetType());
         s.WriteByte((byte)keyType);
         s.WriteByte((byte)valueType);
+        WriteDictionaryEntries(s, v, keyType, valueType, ct);
+    }
+
+    /// <summary>A dictionary's count and entries, for types already declared by the caller.</summary>
+    static void WriteDictionaryEntries(Stream s, IDictionary v, GpType18 keyType, GpType18 valueType, CustomTypeRegistry ct)
+    {
         VarInt.WriteUnsigned(s, (ulong)v.Count);
 
         foreach (DictionaryEntry entry in v)
@@ -323,6 +341,7 @@ public static class Protocol18
 
             GpType18.Hashtable => ReadHashtable(s, ct),
             GpType18.Dictionary => ReadDictionary(s, ct),
+            GpType18.DictionaryArray => ReadDictionaryArray(s, ct),
 
             GpType18.EventData => ReadEventData(s, ct),
             GpType18.OperationRequest => ReadOperationRequest(s, ct),
@@ -511,6 +530,29 @@ public static class Protocol18
         return ct.TryGetByCode(code, out var entry) && entry is not null
             ? entry.Deserialize(data)
             : new UnknownCustomType(code, data);
+    }
+
+    /// <summary>Key and value types once, then the count, then each dictionary's entries.</summary>
+    static Array ReadDictionaryArray(Stream s, CustomTypeRegistry ct)
+    {
+        var keyType = (GpType18)ReadByteChecked(s);
+        var valueType = (GpType18)ReadByteChecked(s);
+        var dictionaryType = typeof(Dictionary<,>).MakeGenericType(ClrTypeOf(keyType), ClrTypeOf(valueType));
+        var length = VarInt.ReadCount(s, "dictionary array");
+        var result = Array.CreateInstance(dictionaryType, length);
+        for (var i = 0; i < length; i++)
+        {
+            var dictionary = (IDictionary)Activator.CreateInstance(dictionaryType)!;
+            var count = VarInt.ReadCount(s, "dictionary");
+            for (var j = 0; j < count; j++)
+            {
+                var key = keyType == GpType18.Unknown ? Deserialize(s, ct) : ReadValue(s, keyType, ct);
+                var value = valueType == GpType18.Unknown ? Deserialize(s, ct) : ReadValue(s, valueType, ct);
+                if (key is not null) dictionary[key] = value;
+            }
+            result.SetValue(dictionary, i);
+        }
+        return result;
     }
 
     static (GpType18 Key, GpType18 Value) DictionaryTypes(Type dictionaryType)
